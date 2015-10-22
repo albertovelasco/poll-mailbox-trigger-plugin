@@ -13,6 +13,7 @@ import hudson.util.DescribableList;
 import hudson.util.FormValidation;
 import hudson.util.Secret;
 import hudson.util.StreamTaskListener;
+import javax.mail.MessagingException;
 import jenkins.model.Jenkins;
 import org.apache.commons.jelly.XMLOutput;
 import org.jenkinsci.lib.xtrigger.XTriggerCause;
@@ -33,10 +34,17 @@ import javax.mail.FolderNotFoundException;
 import javax.mail.Message;
 import javax.mail.search.SearchTerm;
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.Charset;
 import java.util.*;
 
+import javax.mail.BodyPart;
+import javax.mail.Multipart;
+import javax.mail.Part;
+import javax.mail.internet.InternetAddress;
+import org.apache.commons.lang.StringUtils;
 import static org.jenkinsci.plugins.pollmailboxtrigger.PollMailboxTrigger.Properties.*;
 import static org.jenkinsci.plugins.pollmailboxtrigger.mail.utils.MailWrapperUtils.MessagesWrapper;
 import static org.jenkinsci.plugins.pollmailboxtrigger.mail.utils.SearchTermHelpers.*;
@@ -52,6 +60,7 @@ public class PollMailboxTrigger extends AbstractTrigger {
     private String username;
     private Secret password;
     private String script;
+    private String pathDestAttachDefault;
 
 
     @DataBoundConstructor
@@ -65,7 +74,7 @@ public class PollMailboxTrigger extends AbstractTrigger {
         this.script = Util.fixEmpty(script);
     }
 
-    protected static CustomProperties initialiseDefaults(String host, String username, Secret password, String script) {
+    protected static CustomProperties initialiseDefaults(String host, String username, Secret password, String script, String pathDestAttachDefault) {
         // expand environment vars
         Jenkins instance = Jenkins.getInstance();
         if (instance == null) {
@@ -102,7 +111,6 @@ public class PollMailboxTrigger extends AbstractTrigger {
 		password = Secret.fromString(Util.replaceMacro(password.getPlainText(),
 				envVars));
 		script = Util.replaceMacro(script, envVars);
-
 		// build properties
 		CustomProperties p = new CustomProperties(script);
         p.put(Properties.host, host);
@@ -111,7 +119,6 @@ public class PollMailboxTrigger extends AbstractTrigger {
         // setup default values
         p.putIfBlank(storeName, "imaps");
         p.putIfBlank(folder, "INBOX");
-        p.putIfBlank(subjectContains, "jenkins >");
         p.putIfBlank(receivedXMinutesAgo, Integer.toString(60 * 24)); // 60mins * 24hrs = 1 day
         String cnfHost = p.get(Properties.host);
         String cnfStoreName = p.get(storeName);
@@ -166,6 +173,31 @@ public class PollMailboxTrigger extends AbstractTrigger {
                 searchTerms.add(subject(properties.get(subjectContains)));
                 log.info("- [subject contains '" + properties.get(subjectContains) + "']");
             }
+            if (properties.has(fromContains)) {
+                searchTerms.add(from(properties.get(fromContains)));
+                log.info("- [from contains '" + properties.get(fromContains) + "']");
+            }
+            if (properties.has(toContains)) {
+                searchTerms.add(to(properties.get(toContains)));
+                log.info("- [to contains '" + properties.get(toContains) + "']");
+            }
+            if (properties.has(ccContains)) {
+                searchTerms.add(cc(properties.get(ccContains)));
+                log.info("- [cc contains '" + properties.get(ccContains) + "']");
+            }
+            if (properties.has(bodyContains)) {
+                searchTerms.add(body(properties.get(bodyContains)));
+                log.info("- [body contains '" + properties.get(bodyContains) + "']");
+            }
+
+            if (properties.has(pathDestAttach)) {
+                if (properties.has(attachContains)) {
+                    log.info("- [only save attachs with '" + properties.get(attachContains) + "']");
+                }
+            }else{
+                log.info("- [not exist path to save attachs]'");
+            }
+
             // received since X minutes ago
             if (properties.has(receivedXMinutesAgo)) {
                 final int minsAgo = Integer.parseInt(properties.get(receivedXMinutesAgo)) * -1;
@@ -186,14 +218,49 @@ public class PollMailboxTrigger extends AbstractTrigger {
                 log.info(foundEmails);
                 testing.add(foundEmails);
                 if (!testConnection) {
+                    String filterAttach = "";
+                    if (properties.has(attachContains)){
+                        filterAttach = properties.get(attachContains);
+                    }
+
+                    if (!messageList.isEmpty()){
+                        log.info("-------------------------");
+                    }
                     // trigger jobs...
                     for (Message message : messageList) {
-                        final String prefix = "pmt_";
-                        CustomProperties buildParams = messagesTool.getMessageProperties(message, prefix, properties);
-                        properties.remove(Properties.password);
-                        buildParams.putAll(properties, prefix);
-                        pmt.startJob(log, buildParams.getMap());
-                        messagesTool.markAsRead(message);
+                        log.info("Date: "+stringify(message.getSentDate())+
+                                " From: "+((InternetAddress)message.getFrom()[0]).getAddress()+
+                                " Subject: "+message.getSubject()
+                                );
+                        boolean markAsReadAndStartJob = true;
+                        if (properties.has(Properties.pathDestAttach) && StringUtils.isNotBlank(properties.get(Properties.pathDestAttach))){
+                            List<File> attachments = getAttachments(log,message,filterAttach,properties.get(Properties.pathDestAttach));
+                            if (attachments == null || attachments.size() == 0){
+                                markAsReadAndStartJob = false;
+                                log.info("Not found attachments with pattern: "+filterAttach);
+                            }
+                        }
+
+                        if (markAsReadAndStartJob){
+                            messagesTool.markAsRead(message);
+
+                            //Start Job with a ant step give problems
+                            if (properties.has(Properties.enableSaveParameters) && "false".equals(properties.get(Properties.enableSaveParameters))) {
+                                pmt.startJob(log, null);
+                            }else{
+                                final String prefix = "pmt_";
+                                CustomProperties buildParams = messagesTool.getMessageProperties(message, prefix, properties);
+                                properties.remove(Properties.password);
+                                buildParams.putAll(properties, prefix);
+                                pmt.startJob(log, buildParams.getMap());
+                            }
+                        }else{
+                            log.info("NOT Marked as read and NOT started Job");
+                        }
+
+                    }
+                    if (!messageList.isEmpty()){
+                        log.info("-------------------------");
                     }
                 }
             }
@@ -292,7 +359,7 @@ public class PollMailboxTrigger extends AbstractTrigger {
 
     @Override
     protected boolean checkIfModified(Node executingNode, XTriggerLog log) {
-        CustomProperties properties = initialiseDefaults(host, username, password, script);
+        CustomProperties properties = initialiseDefaults(host, username, password, script, pathDestAttachDefault);
         checkForEmails(properties, log, false, this); // use executingNode, ???
         return false; // Don't use XTrigger for invoking a (single) job, we may want to invoke multiple jobs!
     }
@@ -303,7 +370,9 @@ public class PollMailboxTrigger extends AbstractTrigger {
 //        Hudson.getInstance().getJob(jobName);
         List<Action> actions = new ArrayList<Action>();
         actions.addAll(Arrays.asList(getScheduledXTriggerActions(null, log)));
-        actions.add(new ParametersAction(convertToBuildParams(envVars)));
+        if (null != envVars){
+            actions.add(new ParametersAction(convertToBuildParams(envVars)));
+        }
         project.scheduleBuild(0, new NewEmailCause(getName(), getCause(), true), actions.toArray(new Action[actions.size()]));
     }
 
@@ -322,7 +391,7 @@ public class PollMailboxTrigger extends AbstractTrigger {
     }
 
     public enum Properties {
-        storeName, host, username, password, folder, subjectContains, receivedXMinutesAgo
+        storeName, host, username, password, folder, subjectContains, fromContains, toContains, ccContains, bodyContains, attachContains, enableSaveParameters, pathDestAttach, receivedXMinutesAgo
     }
 
     @Extension
@@ -351,7 +420,7 @@ public class PollMailboxTrigger extends AbstractTrigger {
                 @QueryParameter("script") final String script
         ) {
             try {
-                CustomProperties properties = initialiseDefaults(host, username, password, script);
+                CustomProperties properties = initialiseDefaults(host, username, password, script,null);
                 return checkForEmails(properties, new XTriggerLog(new StreamTaskListener(Logger.DEFAULT.getOutputStream())), true, null);
             } catch (Throwable t) {
                 return FormValidation.error("Error : " + stringify(t));
@@ -408,6 +477,45 @@ public class PollMailboxTrigger extends AbstractTrigger {
         public void writeLogTo(XMLOutput out) throws IOException {
             new AnnotatedLargeText<InternalPollMailboxTriggerAction>(getLogFile(), Charset.defaultCharset(), true, this).writeHtmlTo(0, out.asWriter());
         }
+    }
+
+    private static List<File> getAttachments(XTriggerLog log, Message message, String filterAttach, String pathDestAttach) throws IOException, MessagingException {
+        List<File> attachments = new ArrayList<File>();
+        Multipart multipart = (Multipart) message.getContent();
+        // System.out.println(multipart.getCount());
+
+        for (int i = 0; i < multipart.getCount(); i++) {
+            BodyPart bodyPart = multipart.getBodyPart(i);
+            if(!Part.ATTACHMENT.equalsIgnoreCase(bodyPart.getDisposition()) &&
+                   !StringUtils.isNotBlank(bodyPart.getFileName())) {
+                continue; // dealing with attachments only
+            }
+            if (matchPatterWithFileName(bodyPart.getFileName(),filterAttach)){
+                InputStream is = bodyPart.getInputStream();
+                File f = new File(pathDestAttach+bodyPart.getFileName());
+                if (f.exists()){
+                    f = new File(pathDestAttach+StringUtils.substringBeforeLast(bodyPart.getFileName(),".")+
+                            "_"+Calendar.getInstance().getTimeInMillis()+"."+
+                            StringUtils.substringAfterLast(bodyPart.getFileName(),"."));
+                }
+                FileOutputStream fos = new FileOutputStream(f);
+                byte[] buf = new byte[4096];
+                int bytesRead;
+                while((bytesRead = is.read(buf))!=-1) {
+                    fos.write(buf, 0, bytesRead);
+                }
+                fos.close();
+                log.info("Attach saved: "+f.getAbsolutePath());
+                attachments.add(f);
+            }else{
+                log.info("File "+bodyPart.getFileName()+" NOT match with pattern '"+filterAttach+"'");
+            }
+        }
+        return attachments;
+    }
+
+    private static boolean matchPatterWithFileName(String fileName, String filterAttach) {
+        return StringUtils.isBlank(filterAttach) || fileName.matches(filterAttach);
     }
 
 }

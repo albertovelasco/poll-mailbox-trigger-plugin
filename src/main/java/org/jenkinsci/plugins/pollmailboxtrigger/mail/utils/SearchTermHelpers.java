@@ -33,6 +33,18 @@ public class SearchTermHelpers {
         return new FromStringTerm(email);
     }
 
+    public static SearchTerm to(String email) {
+        return new RecipientStringTerm(javax.mail.Message.RecipientType.TO,email);
+    }
+
+    public static SearchTerm cc(String email) {
+        return new RecipientStringTerm(javax.mail.Message.RecipientType.CC,email);
+    }
+
+    public static SearchTerm body(String containsCaseInsensitive) {
+        return new BodyTerm(containsCaseInsensitive);
+    }
+
     public static SearchTerm receivedSince(Date date) {
         return new ReceivedDateTerm(ComparisonTerm.GT, date);
     }

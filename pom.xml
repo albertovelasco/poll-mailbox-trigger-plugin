@@ -9,7 +9,7 @@
 
     <artifactId>poll-mailbox-trigger</artifactId>
     <packaging>hpi</packaging>
-    <version>0.17-SNAPSHOT</version>
+    <version>0.18</version>
     <!-- http://updates.jenkins-ci.org/experimental/update-center.json -->
     <url>http://wiki.jenkins-ci.org/display/JENKINS/poll-mailbox-trigger-plugin</url>
 
@@ -27,6 +27,12 @@
             <name>Nicholas Grealy</name>
             <email>nickgrealy@gmail.com</email>
             <timezone>+10</timezone>
+        </developer>
+        <developer>
+            <id>albertovelasco</id>
+            <name>Alberto Velasco</name>
+            <email>albertovelascocasquero@gmail.com</email>
+            <timezone>+1</timezone>
         </developer>
     </developers>
 
